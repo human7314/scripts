@@ -1,0 +1,20 @@
+#!/bin/sh
+
+case "$BLOCK_BUTTON" in 
+	1) pavucontrol ;;
+	2) wpctl set-mute @DEFAULT_SINK@ toggle ;;
+	4) wpctl set-volume @DEFAULT_SINK@ 1%+ ;; 
+	5) wpctl set-volume @DEFAULT_SINK@ 1%- ;; 
+esac 
+
+vol="$(wpctl get-volume @DEFAULT_SINK@ | awk '{print $2 * 100}')"
+
+if [ "$vol" -gt 40 ]; then
+    icon=" "
+elif [ "$vol" -gt 15 ]; then
+    icon=" "
+else
+    icon=" "
+fi
+
+echo "^c#f4dbd6^$icon^d^ $vol%"
