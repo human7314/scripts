@@ -1,4 +1,0 @@
-#!/bin/sh
-
-temp="$(sensors | awk '/Core 2:/ {print $3}')"
-echo "^c#bcc0cc^  ^c#fe640b^$temp^d^"
