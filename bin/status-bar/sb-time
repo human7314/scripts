@@ -1,5 +1,0 @@
-#!/bin/sh
-
-
-time="$(date '+%I:%M %p')"
-echo "  ^c#a6e3a1^$time^d^"
