@@ -8,13 +8,16 @@ case "$BLOCK_BUTTON" in
 esac 
 
 vol="$(wpctl get-volume @DEFAULT_SINK@ | awk '{print $2 * 100}')"
+muted="$(wpctl get-volume @DEFAULT_SINK@ | awk '{print $3}')"
+var="[MUTED]"
 
-if [ "$vol" -gt 40 ]; then
+if [ "$muted" = "$var" ]; then
+     icon=" "
+     vol=" "
+elif [ "$vol" -gt 40 ]; then
     icon=" "
 elif [ "$vol" -gt 15 ]; then
     icon=" "
-else
-    icon=" "
 fi
 
 echo "^c#f4dbd6^$icon^d^ $vol%"
