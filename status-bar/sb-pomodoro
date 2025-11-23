@@ -238,7 +238,7 @@ CYCLES=$(read_val "$CYCLE_FILE" 0)
 
 # Initial Start Screen Check
 if [ -f "$PAUSE_FILE" ] && [ "$CYCLES" -eq 0 ] && [ "$CURRENT_TIME" -eq 0 ] && [ "$CURRENT_PHASE" = "work" ]; then
-    printf "Start Pomodoro\\n"
+    printf "🍅 Start Pomodoro\\n"
     exit 0
 fi
 
