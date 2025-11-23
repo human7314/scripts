@@ -1,0 +1,108 @@
+#!/bin/sh
+
+STATE="$HOME/.cache/pomo_state"
+WORK_MIN=25   # minutes
+
+# load state
+if [ -f "$STATE" ]; then
+    . "$STATE"
+else
+    status=stopped    # stopped | running | paused | done
+    start=0           # last start timestamp
+    elapsed=0         # seconds already accumulated (not counting current run)
+    duration=$((WORK_MIN * 60))
+    notified=0
+fi
+
+now=$(date +%s)
+
+# handle clicks
+case "$BLOCK_BUTTON" in
+    1)
+        case "$status" in
+            running)
+                # pause: add time since start to elapsed, keep it
+                elapsed=$((elapsed + (now - start)))
+                status=paused
+                notify-send "Pomodoro" "Paused."
+                ;;
+            paused)
+                # resume from paused
+                start=$now
+                status=running
+                notify-send "Pomodoro" "Resumed."
+                ;;
+            stopped|done)
+                # start a new pomodoro
+                status=running
+                start=$now
+                elapsed=0
+                duration=$((WORK_MIN * 60))
+                notified=0
+                notify-send "Pomodoro" "Started!"
+                ;;
+        esac
+        ;;
+    3)
+        # hard reset
+        status=stopped
+        start=0
+        elapsed=0
+        notified=0
+        notify-send "Pomodoro" "Reset."
+        ;;
+esac
+
+# compute current elapsed
+if [ "$status" = running ]; then
+    current_elapsed=$((elapsed + (now - start)))
+else
+    current_elapsed=$elapsed
+fi
+
+# check if finished
+if [ "$current_elapsed" -ge "$duration" ] && [ "$status" != stopped ]; then
+    current_elapsed=$duration
+    status=done
+    if [ "$notified" -eq 0 ]; then
+        notify-send "Pomodoro" "Time's up!"
+        notified=1
+    fi
+fi
+
+# save state
+cat > "$STATE" <<EOF
+status=$status
+start=$start
+elapsed=$current_elapsed
+duration=$duration
+notified=$notified
+EOF
+
+# format helper
+fmt() {
+    sec=$1
+    [ "$sec" -lt 0 ] && sec=0
+    m=$((sec / 60))
+    s=$((sec % 60))
+    printf "%02d:%02d" "$m" "$s"
+}
+
+# print block (single line, with newline)
+case "$status" in
+    stopped)
+        printf "🍅 Start Pomodoro"
+        ;;
+    running)
+        printf "🍅 %s/%s\n" "$(fmt "$current_elapsed")" "$(fmt "$duration")"
+        ;;
+    paused)
+        printf "🍅 ⏸ %s/%s\n" "$(fmt "$current_elapsed")" "$(fmt "$duration")"
+        ;;
+    done)
+        printf "🍅 %s/%s\n" "$(fmt "$duration")" "$(fmt "$duration")"
+        ;;
+    *)
+        printf "🍅 ?\n"
+        ;;
+esac
