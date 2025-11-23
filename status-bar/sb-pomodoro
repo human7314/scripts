@@ -1,108 +1,261 @@
 #!/bin/sh
 
-STATE="$HOME/.cache/pomo_state"
-WORK_MIN=25   # minutes
+# Configuration (in minutes)
+WORK_MIN=25
+BREAK_MIN=5
+LONG_BREAK_MIN=20
+COFFEE_BREAK_MIN=2
 
-# load state
-if [ -f "$STATE" ]; then
-    . "$STATE"
-else
-    status=stopped    # stopped | running | paused | done
-    start=0           # last start timestamp
-    elapsed=0         # seconds already accumulated (not counting current run)
-    duration=$((WORK_MIN * 60))
-    notified=0
-fi
+# Sound File (Absolute path recommended)
+# NOTE: YOU MUST SET THIS PATH CORRECTLY, e.g., /home/error/.local/bin/status-bar/required/notification.mp3
+SOUND_FILE="/home/error/.local/bin/status-bar/required/notification.mp3"
 
-now=$(date +%s)
+# Logic Limits
+CYCLES_FOR_LONG_BREAK=4
+MAX_COFFEE_BREAKS=3
 
-# handle clicks
+# --- Internal Conversions ---
+WORK_TIME=$((WORK_MIN * 60))
+BREAK_TIME=$((BREAK_MIN * 60))
+LONG_BREAK_TIME=$((LONG_BREAK_MIN * 60))
+COFFEE_BREAK_TIME=$((COFFEE_BREAK_MIN * 60))
+
+# Icons
+ICON_WORK="🍅"
+ICON_BREAK="☕"
+ICON_LONG_BREAK="💤"
+ICON_COFFEE="🍵"
+ICON_PAUSE="⏸"
+
+# State management
+STATE_DIR="/tmp/dwm_pomodoro"
+mkdir -p "$STATE_DIR"
+TIME_FILE="$STATE_DIR/time"
+PHASE_FILE="$STATE_DIR/phase"
+PAUSE_FILE="$STATE_DIR/paused"
+CYCLE_FILE="$STATE_DIR/cycles"
+COFFEE_FILE="$STATE_DIR/coffees"
+SAVED_TIME_FILE="$STATE_DIR/saved_time" # Stores elapsed work time during coffee break
+
+# --- Helper Functions ---
+
+play_sound() {
+    [ ! -f "$SOUND_FILE" ] && return
+    # Try common players in background, setting volume=100 for mpv
+    if command -v mpv >/dev/null 2>&1; then
+        mpv --no-terminal --volume=100 "$SOUND_FILE" >/dev/null 2>&1 &
+    elif command -v mpg123 >/dev/null 2>&1; then
+        mpg123 "$SOUND_FILE" >/dev/null 2>&1 &
+    elif command -v ffplay >/dev/null 2>&1; then
+        ffplay -nodisp -autoexit "$SOUND_FILE" >/dev/null 2>&1 &
+    elif command -v paplay >/dev/null 2>&1; then
+        paplay "$SOUND_FILE" >/dev/null 2>&1 &
+    fi
+}
+
+
+send_notification() {
+    # Run in background (&) to prevent blocking the script
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send "Pomodoro" "$1" &
+    fi
+    play_sound
+}
+
+read_val() {
+    if [ -f "$1" ]; then cat "$1"; else echo "$2"; fi
+}
+
+# --- Determine Target Duration for Current Phase ---
+# We need this early for logic checks
+CURRENT_PHASE=$(read_val "$PHASE_FILE" "work")
+case "$CURRENT_PHASE" in
+    "break") TARGET_TIME=$BREAK_TIME ;;
+    "long_break") TARGET_TIME=$LONG_BREAK_TIME ;;
+    "coffee") TARGET_TIME=$COFFEE_BREAK_TIME ;;
+    *) TARGET_TIME=$WORK_TIME ;;
+esac
+
+# --- Signal/Click Handling ---
+# 1 = Left, 2 = Middle, 3 = Right
+
 case "$BLOCK_BUTTON" in
-    1)
-        case "$status" in
-            running)
-                # pause: add time since start to elapsed, keep it
-                elapsed=$((elapsed + (now - start)))
-                status=paused
-                notify-send "Pomodoro" "Paused."
-                ;;
-            paused)
-                # resume from paused
-                start=$now
-                status=running
-                notify-send "Pomodoro" "Resumed."
-                ;;
-            stopped|done)
-                # start a new pomodoro
-                status=running
-                start=$now
-                elapsed=0
-                duration=$((WORK_MIN * 60))
-                notified=0
-                notify-send "Pomodoro" "Started!"
-                ;;
-        esac
+    1) # Toggle Pause/Start
+        # Only allow pausing/unpausing during work phase
+        if [ "$CURRENT_PHASE" = "work" ]; then
+            if [ -f "$PAUSE_FILE" ]; then
+                # Unpausing
+                rm "$PAUSE_FILE"
+                
+                # Check if this is the very first start (0 cycles and 0 time elapsed)
+                CURRENT_CYCLES=$(read_val "$CYCLE_FILE" 0)
+                CURRENT_TIME_VAL=$(read_val "$TIME_FILE" 0)
+
+                if [ "$CURRENT_CYCLES" -eq 0 ] && [ "$CURRENT_TIME_VAL" -eq 0 ]; then
+                    # This is the first time the user clicked 'Start Pomodoro'
+                    play_sound
+                fi
+            else
+                # Pausing
+                touch "$PAUSE_FILE"
+            fi
+        fi
         ;;
-    3)
-        # hard reset
-        status=stopped
-        start=0
-        elapsed=0
-        notified=0
-        notify-send "Pomodoro" "Reset."
+    2) # Coffee Break OR Quit Break
+        # Check if we are currently in ANY break phase
+        if [ "$CURRENT_PHASE" = "break" ] || [ "$CURRENT_PHASE" = "long_break" ] || [ "$CURRENT_PHASE" = "coffee" ]; then
+            # QUIT BREAK LOGIC
+            
+            # If quitting a coffee break, restore the saved elapsed work timer
+            if [ "$CURRENT_PHASE" = "coffee" ] && [ -f "$SAVED_TIME_FILE" ]; then
+                cat "$SAVED_TIME_FILE" > "$TIME_FILE"
+                rm "$SAVED_TIME_FILE"
+            else
+                # If quitting a regular break, start fresh work cycle at 0
+                echo "0" > "$TIME_FILE"
+            fi
+            
+            echo "work" > "$PHASE_FILE"
+            rm -f "$PAUSE_FILE"
+            send_notification "Break ended early. Back to work!"
+            
+        else
+            # START COFFEE BREAK LOGIC (Only valid if in 'work' phase)
+            CURRENT_COFFEES=$(read_val "$COFFEE_FILE" 0)
+            
+            if [ "$CURRENT_COFFEES" -lt "$MAX_COFFEE_BREAKS" ]; then
+                # Save current elapsed work time
+                if [ -f "$TIME_FILE" ]; then cat "$TIME_FILE" > "$SAVED_TIME_FILE"; else echo "0" > "$SAVED_TIME_FILE"; fi
+                
+                # Start coffee break at 0
+                echo "0" > "$TIME_FILE"
+                echo "coffee" > "$PHASE_FILE"
+                
+                # Increment coffee count
+                echo $((CURRENT_COFFEES + 1)) > "$COFFEE_FILE"
+                # Unpause to start break immediately
+                rm -f "$PAUSE_FILE" 
+                send_notification "Taking a quick coffee break..."
+            else
+                send_notification "No coffee breaks left! ($MAX_COFFEE_BREAKS used)"
+            fi
+        fi
+        ;;
+    3) # Reset Timer
+        rm -rf "$STATE_DIR"
+        mkdir -p "$STATE_DIR"
+        echo "0" > "$TIME_FILE"
+        echo "work" > "$PHASE_FILE"
+        echo "0" > "$CYCLE_FILE"
+        echo "0" > "$COFFEE_FILE"
+        touch "$PAUSE_FILE" # Reset to paused state
+        send_notification "Pomodoro Reset"
         ;;
 esac
 
-# compute current elapsed
-if [ "$status" = running ]; then
-    current_elapsed=$((elapsed + (now - start)))
-else
-    current_elapsed=$elapsed
+# --- Logic Loop ---
+
+# Initialize if files don't exist
+if [ ! -f "$TIME_FILE" ]; then
+    echo "0" > "$TIME_FILE"
+    echo "work" > "$PHASE_FILE"
+    echo "0" > "$CYCLE_FILE"
+    echo "0" > "$COFFEE_FILE"
+    touch "$PAUSE_FILE" # Default to paused on startup
 fi
 
-# check if finished
-if [ "$current_elapsed" -ge "$duration" ] && [ "$status" != stopped ]; then
-    current_elapsed=$duration
-    status=done
-    if [ "$notified" -eq 0 ]; then
-        notify-send "Pomodoro" "Time's up!"
-        notified=1
+CURRENT_TIME=$(cat "$TIME_FILE")
+# Phase might have changed in click handler, re-read
+CURRENT_PHASE=$(cat "$PHASE_FILE") 
+
+# If not paused and not triggered by a button press
+if [ ! -f "$PAUSE_FILE" ] && [ -z "$BLOCK_BUTTON" ]; then
+    # Check if we have reached target time
+    if [ "$CURRENT_TIME" -lt "$TARGET_TIME" ]; then
+        CURRENT_TIME=$((CURRENT_TIME + 1))
+        echo "$CURRENT_TIME" > "$TIME_FILE"
+    else
+        # Target reached, switch phase
+        if [ "$CURRENT_PHASE" = "work" ]; then
+            # Work finished -> Check for Long Break
+            CURRENT_CYCLES=$(read_val "$CYCLE_FILE" 0)
+            CURRENT_CYCLES=$((CURRENT_CYCLES + 1))
+            echo "$CURRENT_CYCLES" > "$CYCLE_FILE"
+
+            if [ $((CURRENT_CYCLES % CYCLES_FOR_LONG_BREAK)) -eq 0 ]; then
+                CURRENT_PHASE="long_break"
+                send_notification "Cycle $CURRENT_CYCLES complete. Take a LONG break!"
+            else
+                CURRENT_PHASE="break"
+                send_notification "Cycle $CURRENT_CYCLES complete. Take a break."
+            fi
+            
+        elif [ "$CURRENT_PHASE" = "coffee" ]; then
+            # Coffee finished -> Restore Saved Work Time
+            if [ -f "$SAVED_TIME_FILE" ]; then
+                CURRENT_TIME=$(cat "$SAVED_TIME_FILE")
+                rm "$SAVED_TIME_FILE"
+            else
+                CURRENT_TIME=0
+            fi
+            CURRENT_PHASE="work"
+            send_notification "Coffee break over! Resuming work."
+            # Do not reset CURRENT_TIME to 0 here, we just restored it or set it.
+            # We skip the "reset to 0" step below for coffee return.
+            echo "$CURRENT_TIME" > "$TIME_FILE"
+            echo "$CURRENT_PHASE" > "$PHASE_FILE"
+            exit 0 
+            
+        else
+            # Regular Break finished -> Back to work
+            CURRENT_PHASE="work"
+            send_notification "Break over! Back to work."
+        fi
+        
+        # Reset timer to 0 for new phase (except coffee return handled above)
+        CURRENT_TIME=0
+        echo "$CURRENT_TIME" > "$TIME_FILE"
+        echo "$CURRENT_PHASE" > "$PHASE_FILE"
     fi
 fi
 
-# save state
-cat > "$STATE" <<EOF
-status=$status
-start=$start
-elapsed=$current_elapsed
-duration=$duration
-notified=$notified
-EOF
+# --- Output Formatting ---
 
-# format helper
-fmt() {
-    sec=$1
-    [ "$sec" -lt 0 ] && sec=0
-    m=$((sec / 60))
-    s=$((sec % 60))
-    printf "%02d:%02d" "$m" "$s"
-}
-
-# print block (single line, with newline)
-case "$status" in
-    stopped)
-        printf "🍅 Start Pomodoro"
-        ;;
-    running)
-        printf "🍅 %s/%s\n" "$(fmt "$current_elapsed")" "$(fmt "$duration")"
-        ;;
-    paused)
-        printf "🍅 ⏸ %s/%s\n" "$(fmt "$current_elapsed")" "$(fmt "$duration")"
-        ;;
-    done)
-        printf "🍅 %s/%s\n" "$(fmt "$duration")" "$(fmt "$duration")"
-        ;;
-    *)
-        printf "🍅 ?\n"
-        ;;
+# Recalculate Target for display (phase might have changed in logic loop)
+case "$CURRENT_PHASE" in
+    "break") TOTAL_DURATION=$BREAK_TIME ;;
+    "long_break") TOTAL_DURATION=$LONG_BREAK_TIME ;;
+    "coffee") TOTAL_DURATION=$COFFEE_BREAK_TIME ;;
+    *) TOTAL_DURATION=$WORK_TIME ;;
 esac
+
+TOTAL_MIN=$((TOTAL_DURATION / 60))
+TOTAL_SEC=$((TOTAL_DURATION % 60))
+
+MIN=$((CURRENT_TIME / 60))
+SEC=$((CURRENT_TIME % 60))
+CYCLES=$(read_val "$CYCLE_FILE" 0)
+
+# Initial Start Screen Check
+if [ -f "$PAUSE_FILE" ] && [ "$CYCLES" -eq 0 ] && [ "$CURRENT_TIME" -eq 0 ] && [ "$CURRENT_PHASE" = "work" ]; then
+    printf "Start Pomodoro\\n"
+    exit 0
+fi
+
+# Determine Icon
+if [ -f "$PAUSE_FILE" ]; then
+    ICON="$ICON_PAUSE"
+else 
+    case "$CURRENT_PHASE" in
+        "work") ICON="$ICON_WORK" ;;
+        "break") ICON="$ICON_BREAK" ;;
+        "long_break") ICON="$ICON_LONG_BREAK" ;;
+        "coffee") ICON="$ICON_COFFEE" ;;
+        *) ICON="$ICON_WORK" ;;
+    esac
+fi
+
+# Show cycle count if > 0
+[ "$CYCLES" -gt 0 ] && CYCLE_TXT=" ($CYCLES)" || CYCLE_TXT=""
+
+printf "%s%s %02d:%02d/%02d:%02d\\n" "$ICON" "$CYCLE_TXT" "$MIN" "$SEC" "$TOTAL_MIN" "$TOTAL_SEC"
