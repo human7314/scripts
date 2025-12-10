@@ -1,9 +1,9 @@
 #!/bin/sh
 
 # Configuration (in minutes)
-WORK_MIN=25
+WORK_MIN=45
 BREAK_MIN=5
-LONG_BREAK_MIN=20
+LONG_BREAK_MIN=15
 COFFEE_BREAK_MIN=2
 
 # Sound File (Absolute path recommended)
