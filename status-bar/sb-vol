@@ -20,4 +20,5 @@ elif [ "$vol" -gt 15 ]; then
     icon=" "
 fi
 
-echo "^c#f4dbd6^$icon^d^ $vol%"
+# echo "^c#f4dbd6^$icon^d^ $vol%"
+echo "^c#5c6370^$icon $vol%^d^"

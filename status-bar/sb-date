@@ -1,6 +1,11 @@
 #!/bin/sh
 
+# day="$(date '+%A, ')"
+# d="$(date '+%d %B')"
+# 
+# echo " ^c#eba0ac^$day$d^d^"
+
 day="$(date '+%A, ')"
 d="$(date '+%d %B')"
 
-echo " ^c#eba0ac^$day$d^d^"
+echo "^c#5c6370^ $day$d^d^"

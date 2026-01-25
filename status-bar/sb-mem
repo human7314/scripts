@@ -1,4 +1,5 @@
 #!/bin/sh
 
 mem="$(free -m | awk '/Mem:/ {print $3}')"
-echo "^c#ea999c^ ^d^ ^c#99d1db^$mem ム^d^"
+# echo "^c#ea999c^ ^d^ ^c#99d1db^$mem ム^d^"
+echo "^c#5c6370^  $mem MB^d^"
