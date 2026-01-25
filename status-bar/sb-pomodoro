@@ -238,7 +238,7 @@ CYCLES=$(read_val "$CYCLE_FILE" 0)
 
 # Initial Start Screen Check
 if [ -f "$PAUSE_FILE" ] && [ "$CYCLES" -eq 0 ] && [ "$CURRENT_TIME" -eq 0 ] && [ "$CURRENT_PHASE" = "work" ]; then
-    printf "^c#5c6370^󱫡 Start Pomodoro\\n^d^"
+    printf "⏳ Start Pomodoro\\n^"
     exit 0
 fi
 
@@ -258,5 +258,4 @@ fi
 # Show cycle count if > 0
 [ "$CYCLES" -gt 0 ] && CYCLE_TXT=" ($CYCLES)" || CYCLE_TXT=""
 
-# printf "%s%s %02d:%02d/%02d:%02d\\n" "$ICON" "$CYCLE_TXT" "$MIN" "$SEC" "$TOTAL_MIN" "$TOTAL_SEC"
-printf "^c#5c6370^%s%s %02d:%02d/%02d:%02d^d^\\n" "$ICON" "$CYCLE_TXT" "$MIN" "$SEC" "$TOTAL_MIN" "$TOTAL_SEC"
+printf "%s%s %02d:%02d/%02d:%02d\\n" "$ICON" "$CYCLE_TXT" "$MIN" "$SEC" "$TOTAL_MIN" "$TOTAL_SEC"
