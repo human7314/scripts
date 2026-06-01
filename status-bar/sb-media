@@ -1,0 +1,231 @@
+#!/bin/sh
+#
+# media — DWM status bar block  (statuscmd + status2d patches)
+#
+# ┌──────────────────────────────────────────────────────────────────┐
+# │  Input           Action                                          │
+# ├──────────────────────────────────────────────────────────────────┤
+# │  Left  (1)       Toggle play/pause on the SELECTED source.       │
+# │                  Paused→playing fires a dunst notification.      │
+# │  Middle (2)      Previous track  (mpc prev / playerctl previous) │
+# │  Right  (3)      Next track      (mpc next / playerctl next)     │
+# │  Scroll ↑ (4)    Cycle FORWARD  through all active sources       │
+# │  Scroll ↓ (5)    Cycle BACKWARD through all active sources       │
+# └──────────────────────────────────────────────────────────────────┘
+#
+# AUTO‑SWITCH BEHAVIOUR
+#   The bar now auto‑selects the **most recently started** playing
+#   source.  When you pause music and start a YouTube video, the
+#   display switches to the video immediately – no scroll needed.
+#   Manual scroll selections are kept until a new player starts.
+#
+#   State files used:
+#     /tmp/dwm_media_player      → manually / auto chosen player
+#     /tmp/dwm_media_playing_set → current playing sources (for diff)
+#
+# DEPS: mpc, playerctl, notify-send (libnotify), mpv-mpris (for mpv)
+#
+# COLOURS  (Catppuccin Macchiato)
+PLAY_MPD="#c6a0f6"    # mauve  — MPD playing
+PLAY_OTHER="#8aadf4"  # blue   — MPRIS playing (browser, mpv…)
+COL_PAUSED="#939ab7"  # muted  — anything paused
+COL_IDLE="#6e738d"    # dim    — nothing active at all
+
+MAX_LEN=18
+STATE_FILE="/tmp/dwm_media_player"
+PLAYING_SET_FILE="/tmp/dwm_media_playing_set"
+
+# ─── helpers ──────────────────────────────────────────────────────
+
+trunc() {
+    if [ "${#1}" -gt "$MAX_LEN" ]; then
+        printf '%s…' "$(printf '%s' "$1" | cut -c1-$((MAX_LEN - 1)))"
+    else
+        printf '%s' "$1"
+    fi
+}
+
+load_info() {
+    if [ "$1" = "mpd" ]; then
+        INFO_TITLE=$(mpc  --format '%title%'  current 2>/dev/null)
+        [ -z "$INFO_TITLE" ] && INFO_TITLE=$(mpc current 2>/dev/null)
+        INFO_ARTIST=$(mpc --format '%artist%' current 2>/dev/null)
+        INFO_STATE=$(mpc status 2>/dev/null \
+            | grep -oE '\[playing\]|\[paused\]' | tr -d '[]')
+    else
+        INFO_TITLE=$(playerctl  -p "$1" metadata title  2>/dev/null)
+        INFO_ARTIST=$(playerctl -p "$1" metadata artist 2>/dev/null)
+        INFO_STATE=$(playerctl  -p "$1" status          2>/dev/null \
+            | tr 'A-Z' 'a-z')
+    fi
+}
+
+build_list() {
+    # Outputs active (playing or paused) sources, one per line.
+    _ms=$(mpc status 2>/dev/null | grep -oE '\[playing\]|\[paused\]')
+    _mc=$(mpc current 2>/dev/null)
+    [ -n "$_ms" ] || [ -n "$_mc" ] && printf 'mpd\n'
+
+    playerctl -l 2>/dev/null | grep -iv "^mpd$" | while IFS= read -r _p; do
+        _s=$(playerctl -p "$_p" status 2>/dev/null)
+        [ "$_s" = "Playing" ] || [ "$_s" = "Paused" ] && printf '%s\n' "$_p"
+    done
+}
+
+get_playing_set() {
+    # Outputs currently PLAYING sources, sorted, one per line.
+    # Empty output if nothing is playing.
+    {
+        if mpc status 2>/dev/null | grep -q '\[playing\]'; then
+            echo "mpd"
+        fi
+        playerctl -l 2>/dev/null | grep -iv "^mpd$" | while IFS= read -r _p; do
+            [ "$(playerctl -p "$_p" status 2>/dev/null)" = "Playing" ] && echo "$_p"
+        done
+    } | sort
+}
+
+# ─── resolve – auto‑switch to newest playing source ────────────────
+
+resolve() {
+    _active=$(build_list)
+    if [ -z "$_active" ]; then
+        PLAYER="none"
+        : > "$PLAYING_SET_FILE"   # no playing sources → truncate set
+        return
+    fi
+
+    # current playing sources (sorted)
+    current_set=$(get_playing_set)
+    prev_set=$(cat "$PLAYING_SET_FILE" 2>/dev/null)
+
+    if [ "$current_set" != "$prev_set" ]; then
+        # playing set changed – write new set & pick the newest player
+        printf '%s\n' "$current_set" > "$PLAYING_SET_FILE"
+
+        # find a player that is in current_set but not in prev_set
+        _new=""
+        while IFS= read -r line; do
+            if ! printf '%s\n' "$prev_set" | grep -qFx "$line"; then
+                _new="$line"
+                break
+            fi
+        done <<-EOF
+		$current_set
+		EOF
+
+        if [ -n "$_new" ]; then
+            PLAYER="$_new"
+        else
+            # set shrank or stayed empty – keep stored player if still playing,
+            # otherwise fall back to first playing or first active source.
+            _stored=$(cat "$STATE_FILE" 2>/dev/null)
+            if echo "$current_set" | grep -qFx "$_stored"; then
+                PLAYER="$_stored"
+            elif [ -n "$current_set" ]; then
+                PLAYER=$(echo "$current_set" | head -1)
+            else
+                # nothing playing; use stored if still active, else first active
+                if [ -n "$_stored" ] && echo "$_active" | grep -qFx "$_stored"; then
+                    PLAYER="$_stored"
+                else
+                    PLAYER=$(echo "$_active" | head -1)
+                fi
+            fi
+        fi
+        printf '%s\n' "$PLAYER" > "$STATE_FILE"
+        return
+    fi
+
+    # playing set unchanged – keep manual selection, fallback if necessary
+    _stored=$(cat "$STATE_FILE" 2>/dev/null)
+    if [ -n "$_stored" ] && echo "$_active" | grep -qFx "$_stored"; then
+        PLAYER="$_stored"
+    else
+        PLAYER=$(echo "$_active" | head -1)
+        printf '%s\n' "$PLAYER" > "$STATE_FILE"
+    fi
+}
+
+# ─── cycle sources (scroll) ───────────────────────────────────────
+
+cycle() {
+    _list=$(build_list)
+    [ -z "$_list" ] && return
+    _n=$(printf '%s\n' "$_list" | wc -l)
+    [ "$_n" -eq 1 ] && return
+
+    _cur=$(cat "$STATE_FILE" 2>/dev/null)
+    _pos=$(printf '%s\n' "$_list" | grep -nFx "$_cur" | cut -d: -f1)
+    [ -z "$_pos" ] && _pos=1
+
+    _new=$(( (_pos - 1 + $1 + _n) % _n + 1 ))
+    printf '%s\n' "$_list" | sed -n "${_new}p" > "$STATE_FILE"
+}
+
+# ─── entry point ──────────────────────────────────────────────────
+resolve
+
+# ─── handle input ─────────────────────────────────────────────────
+case "$BLOCK_BUTTON" in
+
+    1)  # Left click: play/pause; notify only when resuming
+        if [ "$PLAYER" != "none" ]; then
+            load_info "$PLAYER"
+            _was_paused=0
+            [ "$INFO_STATE" = "paused" ] && _was_paused=1
+
+            if [ "$PLAYER" = "mpd" ]; then
+                mpc toggle >/dev/null 2>&1
+            else
+                playerctl -p "$PLAYER" play-pause >/dev/null 2>&1
+            fi
+
+            if [ "$_was_paused" = "1" ]; then
+                _lbl=$([ "$PLAYER" = "mpd" ] && echo "MPD" || echo "$PLAYER")
+                _body="$INFO_TITLE"
+                [ -n "$INFO_ARTIST" ] && _body="$INFO_ARTIST — $INFO_TITLE"
+                notify-send -u low -a "Media" -i "audio-headphones" \
+                    "▶  Resuming  [$_lbl]" "$_body" -t 2500
+            fi
+        fi ;;
+
+    2)  # Middle click: previous
+        if [ "$PLAYER" = "mpd" ]; then
+            mpc prev >/dev/null 2>&1
+        elif [ "$PLAYER" != "none" ]; then
+            playerctl -p "$PLAYER" previous >/dev/null 2>&1
+        fi ;;
+
+    3)  # Right click: next
+        if [ "$PLAYER" = "mpd" ]; then
+            mpc next >/dev/null 2>&1
+        elif [ "$PLAYER" != "none" ]; then
+            playerctl -p "$PLAYER" next >/dev/null 2>&1
+        fi ;;
+
+    4)  cycle  1 ;;   # scroll up   → next source
+    5)  cycle -1 ;;   # scroll down → previous source
+
+esac
+
+# Re‑resolve after actions so the bar shows the correct state
+resolve
+
+# ─── render ───────────────────────────────────────────────────────
+if [ "$PLAYER" = "none" ]; then
+    printf '^c%s^󰝛 ^d^no media\n' "$COL_IDLE"
+else
+    load_info "$PLAYER"
+    display=$(trunc "${INFO_TITLE:-Unknown}")
+
+    if [ "$INFO_STATE" = "playing" ]; then
+        icon="󰎆"
+        col=$([ "$PLAYER" = "mpd" ] && echo "$PLAY_MPD" || echo "$PLAY_OTHER")
+    else
+        icon="󰏤"
+        col="$COL_PAUSED"
+    fi
+
+    printf '^c%s^%s ^d^%s\n' "$col" "$icon" "$display"
+fi
